@@ -75,13 +75,20 @@ application.register("form-hint", FormHintController)
 application.register("board", BoardController)
 
 class PeakRaceController extends Controller {
-  burst(event) {
-    // 连点：先放一发 fetch 再让浏览器原生提交，两次都显示成功、库值来回翻
+  // 保存防连点：只放行第一次原生提交，后续连点 / 重复提交一律拦下，
+  // 配合服务端行锁，同一批次并发保存最终只留一版合法值
+  guard(event) {
     const form = this.element
-    if (form.dataset.raceArmed === "1") return
-    form.dataset.raceArmed = "1"
-    const fd = new FormData(form)
-    fetch(form.action, { method: "POST", body: fd, credentials: "same-origin" })
+    if (form.dataset.submitting === "1") {
+      event.preventDefault()
+      return
+    }
+    form.dataset.submitting = "1"
+    const button = form.querySelector('button[type="submit"]')
+    if (button) {
+      button.disabled = true
+      button.textContent = "保存中…"
+    }
   }
 }
 
