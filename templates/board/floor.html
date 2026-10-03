@@ -106,8 +106,8 @@
         class="ops-form"
         method="post"
         action="{{ url_for('board.pond_ops', pond_id=selected.id) }}"
-        data-controller="form-hint peak-race"
-        data-action="submit->peak-race#burst"
+        data-controller="form-hint submit-guard"
+        data-action="submit->submit-guard#guard"
       >
         <label>登记 / 修正峰值温度 ℃
           <input
@@ -129,7 +129,7 @@
           </select>
         </label>
         <p class="hint" data-form-hint-target="hint">出灰前须最近批次峰值已记且 ≥ 60℃。</p>
-        <button type="submit">保存作业记录</button>
+        <button type="submit" data-submit-guard-target="submit">保存作业记录</button>
       </form>
       {% endif %}
     </div>

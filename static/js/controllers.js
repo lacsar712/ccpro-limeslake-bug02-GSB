@@ -74,16 +74,25 @@ application.register("flash", FlashController)
 application.register("form-hint", FormHintController)
 application.register("board", BoardController)
 
-class PeakRaceController extends Controller {
-  burst(event) {
-    // 连点：先放一发 fetch 再让浏览器原生提交，两次都显示成功、库值来回翻
-    const form = this.element
-    if (form.dataset.raceArmed === "1") return
-    form.dataset.raceArmed = "1"
-    const fd = new FormData(form)
-    fetch(form.action, { method: "POST", body: fd, credentials: "same-origin" })
+class SubmitGuardController extends Controller {
+  static targets = ["submit"]
+
+  connect() {
+    this.submitting = false
+  }
+
+  guard(event) {
+    // 连点 / 重复提交只放行第一发，后续一律拦下；按钮随提交禁用
+    if (this.submitting) {
+      event.preventDefault()
+      return
+    }
+    this.submitting = true
+    if (this.hasSubmitTarget) {
+      this.submitTarget.disabled = true
+    }
   }
 }
 
-application.register("peak-race", PeakRaceController)
+application.register("submit-guard", SubmitGuardController)
 

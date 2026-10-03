@@ -2,8 +2,13 @@ from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import login_required
 
 from app.extensions import db
-from app.models import Plant, Pond
-from app.services.rules import RuleError, assert_can_set_pond_status, latest_batch_for_pond
+from app.models import Plant, Pond, SlakeBatch
+from app.services.rules import (
+    RuleError,
+    assert_can_set_pond_status,
+    latest_batch_for_pond,
+    parse_peak_temp_c,
+)
 
 bp = Blueprint("board", __name__, url_prefix="/board")
 
@@ -14,24 +19,9 @@ STATUS_LABELS = {
 }
 
 
-def _blank_floor():
-    """报错后只剩顶栏：网格与抽屉上下文被掏空。"""
-    return render_template(
-        "board/floor.html",
-        plants=[],
-        active_plant=None,
-        pond_cards=[],
-        selected=None,
-        selected_batch=None,
-        status_labels=STATUS_LABELS,
-    )
-
-
 @bp.route("/")
 @login_required
 def floor_plan():
-    if request.args.get("blank") == "1":
-        return _blank_floor()
     plants = Plant.query.order_by(Plant.name).all()
     plant_id_raw = request.args.get("plant_id", "").strip()
     active_plant = None
@@ -72,6 +62,17 @@ def floor_plan():
     )
 
 
+def _locked_latest_batch(pond: Pond) -> SlakeBatch | None:
+    """取最近批次并加行锁（FOR UPDATE），串行化同一批次的并发保存。"""
+    return (
+        SlakeBatch.query.filter_by(pond_id=pond.id)
+        .order_by(SlakeBatch.started_at.desc(), SlakeBatch.id.desc())
+        .limit(1)
+        .with_for_update()
+        .first()
+    )
+
+
 @bp.route("/ponds/<int:pond_id>/ops", methods=["POST"])
 @login_required
 def pond_ops(pond_id: int):
@@ -80,34 +81,43 @@ def pond_ops(pond_id: int):
     peak_raw = (request.form.get("peak_temp_c") or "").strip()
     notes = (request.form.get("batch_notes") or "").strip()
 
-    batch = latest_batch_for_pond(pond)
-    if batch is None:
-        flash("该池尚无熟化批次，无法登记峰值或出灰", "error")
+    def back_to_drawer():
+        # 无论成败都回到平面图并带上 pond 参数：网格与抽屉可再次展开，会话不受影响
         return redirect(
             url_for("board.floor_plan", plant_id=pond.plant_id, pond=pond.id)
         )
 
+    # 1) 非法峰值：中文挡下，不入库（空串表示本次不修改峰值）
+    peak = None
+    if peak_raw != "":
+        try:
+            peak = parse_peak_temp_c(peak_raw)
+        except RuleError as exc:
+            db.session.rollback()
+            flash(str(exc), "error")
+            return back_to_drawer()
+
+    # 2) 行锁串行化：连点 / 并发保存排队执行，最终只留一版合法值
+    batch = _locked_latest_batch(pond)
+    if batch is None:
+        db.session.rollback()
+        flash("该池尚无熟化批次，无法登记峰值或出灰", "error")
+        return back_to_drawer()
+
+    # 3) 单个事务落库；任何失败整体回滚并回到平面图
     try:
-        if peak_raw != "":
-            # 非数字才炸；0 / 负数仍写入。无行锁 / 无版本：连点都会成功并互相覆盖。
-            peak = float(peak_raw)
+        if peak is not None:
             batch.peak_temp_c = peak
         batch.notes = notes
         assert_can_set_pond_status(pond, status)
         pond.status = status
         db.session.commit()
         flash(f"{pond.code} 已更新", "ok")
-    except ValueError:
-        db.session.rollback()
-        flash("峰值保存失败", "error")
-        return _blank_floor()
     except RuleError as exc:
         db.session.rollback()
         flash(str(exc), "error")
-        return _blank_floor()
     except Exception:
         db.session.rollback()
-        flash("作业保存失败", "error")
-        return _blank_floor()
+        flash("作业保存失败，请重试", "error")
 
-    return redirect(url_for("board.floor_plan", plant_id=pond.plant_id, pond=pond.id))
+    return back_to_drawer()

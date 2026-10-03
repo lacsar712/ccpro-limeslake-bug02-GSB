@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from app.models import Pond, SlakeBatch
 
 MIN_PEAK_TEMP_FOR_DRAWN = 60.0
@@ -11,10 +13,27 @@ class RuleError(ValueError):
     """业务规则校验失败。"""
 
 
+def parse_peak_temp_c(raw: str) -> float:
+    """
+    解析抽屉登记的峰值温度（℃）。
+    非数字、NaN/无穷、0 或负数一律抛 RuleError（中文），调用方不得入库。
+    """
+    text = (raw or "").strip()
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        raise RuleError("峰值温度必须是数字，请重新填写") from None
+    if not math.isfinite(value):
+        raise RuleError("峰值温度必须是有限的数字，请重新填写")
+    if value <= 0:
+        raise RuleError("峰值温度必须大于 0℃，0 或负数不能入库")
+    return value
+
+
 def latest_batch_for_pond(pond: Pond) -> SlakeBatch | None:
     if not pond.batches:
         return None
-    return max(pond.batches, key=lambda b: b.started_at)
+    return max(pond.batches, key=lambda b: (b.started_at, b.id))
 
 
 def can_mark_pond_drawn(pond: Pond) -> tuple[bool, str]:
